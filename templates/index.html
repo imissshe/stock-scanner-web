@@ -39,6 +39,7 @@
         <select id="mode">
           <option value="watchlist">自选股扫描</option>
           <option value="limit_up">A股涨停池</option>
+          <option value="options">美股期权异动（CBOE 延迟约15分钟）</option>
         </select>
       </div>
       <div>
@@ -49,6 +50,10 @@
     <div id="symWrap">
       <label>自选股代码（逗号分隔，A股6位、港股4/5位、美股代码，如 600519,00700,NVDA）</label>
       <input type="text" id="symbols" value="{{ default_symbols }}">
+    </div>
+    <div id="optWrap" style="display:none">
+      <label>期权标的代码（美股，如 NVDA、AAPL、TSLA）</label>
+      <input type="text" id="optTicker" value="NVDA">
     </div>
     <div class="row" style="margin-top:12px">
       <div><label>最小涨跌幅 %（绝对值）</label><input type="number" id="min_change" value="0" step="0.5"></div>
@@ -67,15 +72,20 @@
 
 <script>
 const $ = id => document.getElementById(id);
-$('mode').addEventListener('change', e => { $('symWrap').style.display = e.target.value === 'limit_up' ? 'none' : 'block'; });
+$('mode').addEventListener('change', e => {
+  const m = e.target.value;
+  $('symWrap').style.display = m === 'limit_up' ? 'none' : (m === 'options' ? 'none' : 'block');
+  $('optWrap').style.display = m === 'options' ? 'block' : 'none';
+});
 
 async function startScan() {
   const btn = $('go'); btn.disabled = true; btn.textContent = '扫描中…';
   $('resultCard').style.display = 'none';
   $('status').textContent = '正在拉取行情与K线，请稍候（约 10–30 秒）…';
+  const mode = $('mode').value;
   const body = {
-    mode: $('mode').value,
-    symbols: $('symbols').value,
+    mode: mode,
+    symbols: mode === 'options' ? $('optTicker').value : $('symbols').value,
     top: parseInt($('top').value) || 20,
     min_change: parseFloat($('min_change').value) || 0,
     min_relvol: parseFloat($('min_relvol').value) || 0
@@ -131,6 +141,19 @@ function render(report) {
       html += `<tr><td class="score">${r.score}</td><td>${r.symbol}</td><td>${q.name || ''}</td><td>${q.price}</td><td class="${cls}">${chg}%</td><td>${ind.RSI14}</td><td>${ind.rel_volume}</td><td>${ind.MA5} / ${ind.MA10} / ${ind.MA20}</td><td>${tags}</td></tr>`;
     }
     t.innerHTML = html;
+  } else if (report.options_unusual) {
+    const tk = Object.keys(report.options_unusual)[0];
+    const o = report.options_unusual[tk] || {};
+    $('resultHead').textContent = tk + ' 期权异动（Vol/OI>1，按成交量排序 · CBOE 延迟报价）';
+    let html = '<tr><th>到期日</th><th>类型</th><th>行权价</th><th>成交量</th><th>OI</th><th>Vol/OI</th><th>IV</th><th>Delta</th></tr>';
+    for (const c of (o.top || [])) {
+      html += `<tr><td>${c.expiry}</td><td>${c.type === 'call' ? '看涨' : '看跌'}</td><td>${c.strike}</td><td>${c.volume}</td><td>${c.oi}</td><td>${c.vol_oi}</td><td>${c.iv ?? ''}</td><td>${c.delta ?? ''}</td></tr>`;
+    }
+    t.innerHTML = html;
+    $('resultMeta').innerHTML = '快照时间：' + (o.timestamp || '') + ' · 共 ' + (o.count || 0) + ' 个 Vol/OI>1 合约<br>' +
+      '数据源：' + (((report.meta || {}).sources) || []).join('；') + '<br>' +
+      '注：Vol/OI>1 仅为成交活跃信号，不认定为机构买入；成交量为合约级聚合值，非逐笔大单；CBOE 数据延迟约 15 分钟，仅供个人研究。';
+    return;
   } else if (report.cn_limit_up_pool) {
     $('resultHead').textContent = 'A股涨停池（今日）';
     let html = '<tr><th>代码</th><th>名称</th><th>价格</th><th>涨跌幅</th><th>板型</th><th>连板天数</th><th>封板率</th><th>换手率</th><th>原因</th></tr>';

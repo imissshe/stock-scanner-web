@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """股票异动扫描器网页版：Flask 包装 scan.py，对外提供扫描页面与 API。"""
 import json
+import math
 import threading
 import time
 import uuid
@@ -11,6 +12,22 @@ from flask import Flask, jsonify, render_template, request
 import scan as scanner
 
 app = Flask(__name__)
+
+
+def _jsonable(obj):
+    """递归转换 numpy 类型与非有限浮点数为 JSON 可序列化值。"""
+    if isinstance(obj, dict):
+        return {k: _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_jsonable(v) for v in obj]
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if hasattr(obj, "item"):
+        try:
+            return _jsonable(obj.item())
+        except Exception:
+            return str(obj)
+    return obj
 
 DEFAULT_SYMBOLS = "600519,000001,300750,688981,00700,09988,NVDA,AAPL,TSLA"
 JOBS = {}
@@ -30,7 +47,10 @@ def run_scan_job(job_id, symbols, top, min_change, min_relvol, mode, market):
         scanner.stats = {"ok": 0, "fail": 0, "errors": [], "sources": set(),
                          "quote_times": set()}
         report = {"generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")}
-        if mode == "limit_up":
+        if mode == "options":
+            tk = (symbols.split(",")[0] if symbols else "").strip().upper() or "NVDA"
+            report["options_unusual"] = {tk: scanner.options_unusual(tk, top)}
+        elif mode == "limit_up":
             report["cn_limit_up_pool"] = scanner.scan_cn_full(args)
         else:
             syms = [s for s in symbols.split(",") if s.strip()]
@@ -75,7 +95,7 @@ def api_result(job_id):
     job = JOBS.get(job_id)
     if not job:
         return jsonify({"status": "not_found"}), 404
-    return jsonify(job)
+    return jsonify(_jsonable(job))
 
 
 @app.route("/health")
