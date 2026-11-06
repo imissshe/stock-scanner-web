@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>股票异动扫描器</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f5f6f8; color: #222; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: #666; font-size: 13px; margin-bottom: 20px; }
+  .card { background: #fff; border-radius: 10px; padding: 18px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  label { font-size: 13px; color: #555; display: block; margin-bottom: 6px; }
+  input[type=text], input[type=number], select { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #d5d5d5; border-radius: 6px; font-size: 14px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 120px; }
+  button { background: #1677ff; color: #fff; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 15px; cursor: pointer; }
+  button:disabled { background: #9bbcf5; cursor: wait; }
+  #status { margin-top: 12px; font-size: 13px; color: #666; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { padding: 8px 6px; border-bottom: 1px solid #eee; text-align: left; white-space: nowrap; }
+  th { color: #888; font-weight: 600; }
+  .up { color: #d4380d; } .down { color: #1a9e54; }
+  .score { font-weight: 700; }
+  .meta { font-size: 12px; color: #888; margin-top: 10px; line-height: 1.7; }
+  .tag { display: inline-block; background: #fff1f0; color: #d4380d; border-radius: 4px; padding: 1px 6px; font-size: 12px; margin-right: 4px; }
+  .tag.green { background: #f6ffed; color: #389e0d; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>股票异动扫描器</h1>
+  <div class="sub">A股 / 港股 / 美股 · 数据源：新浪行情、腾讯K线、Yahoo、 CBOE · 仅供个人研究</div>
+
+  <div class="card">
+    <label>扫描模式</label>
+    <div class="row" style="margin-bottom:12px">
+      <div>
+        <select id="mode">
+          <option value="watchlist">自选股扫描</option>
+          <option value="limit_up">A股涨停池</option>
+        </select>
+      </div>
+      <div>
+        <label style="margin:0">显示条数</label>
+        <input type="number" id="top" value="20" min="1" max="50">
+      </div>
+    </div>
+    <div id="symWrap">
+      <label>自选股代码（逗号分隔，A股6位、港股4/5位、美股代码，如 600519,00700,NVDA）</label>
+      <input type="text" id="symbols" value="{{ default_symbols }}">
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div><label>最小涨跌幅 %（绝对值）</label><input type="number" id="min_change" value="0" step="0.5"></div>
+      <div><label>最小量比</label><input type="number" id="min_relvol" value="0" step="0.5"></div>
+    </div>
+    <div style="margin-top:16px"><button id="go" onclick="startScan()">开始扫描</button></div>
+    <div id="status"></div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none">
+    <div id="resultHead" style="font-weight:600;margin-bottom:6px"></div>
+    <div style="overflow-x:auto"><table id="resultTable"></table></div>
+    <div class="meta" id="resultMeta"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+$('mode').addEventListener('change', e => { $('symWrap').style.display = e.target.value === 'limit_up' ? 'none' : 'block'; });
+
+async function startScan() {
+  const btn = $('go'); btn.disabled = true; btn.textContent = '扫描中…';
+  $('resultCard').style.display = 'none';
+  $('status').textContent = '正在拉取行情与K线，请稍候（约 10–30 秒）…';
+  const body = {
+    mode: $('mode').value,
+    symbols: $('symbols').value,
+    top: parseInt($('top').value) || 20,
+    min_change: parseFloat($('min_change').value) || 0,
+    min_relvol: parseFloat($('min_relvol').value) || 0
+  };
+  try {
+    const r = await fetch('/api/scan', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const {job_id} = await r.json();
+    poll(job_id);
+  } catch (e) {
+    $('status').textContent = '请求失败：' + e;
+    btn.disabled = false; btn.textContent = '开始扫描';
+  }
+}
+
+async function poll(job_id) {
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    const res = await fetch('/api/result/' + job_id);
+    const job = await res.json();
+    if (job.status === 'done') { render(job.report); return; }
+    if (job.status === 'error') {
+      $('status').textContent = '扫描失败：' + (job.error || '未知错误');
+      const btn = $('go'); btn.disabled = false; btn.textContent = '开始扫描';
+      return;
+    }
+    $('status').textContent = '扫描中…已等待 ' + ((i + 1) * 2) + ' 秒';
+  }
+  $('status').textContent = '扫描超时，请重试。';
+  const btn = $('go'); btn.disabled = false; btn.textContent = '开始扫描';
+}
+
+function render(report) {
+  const btn = $('go'); btn.disabled = false; btn.textContent = '开始扫描';
+  $('status').textContent = '完成 · ' + report.generated_at;
+  $('resultCard').style.display = 'block';
+  const t = $('resultTable');
+  if (report.watchlist) {
+    $('resultHead').textContent = '自选股异动扫描（按异动评分排序）';
+    let html = '<tr><th>评分</th><th>代码</th><th>名称</th><th>价格</th><th>涨跌幅</th><th>RSI14</th><th>量比</th><th>MA5/10/20</th><th>信号</th></tr>';
+    for (const r of report.watchlist) {
+      const q = r.quote, ind = r.indicators;
+      const chg = q.change_pct;
+      const cls = chg > 0 ? 'up' : (chg < 0 ? 'down' : '');
+      let tags = '';
+      if (r.limit) {
+        if (r.limit.is_limit_up) tags += '<span class="tag">涨停' + (r.limit.limit_streak > 1 ? r.limit.limit_streak + '连板' : '') + '</span>';
+        if (r.limit.is_fried) tags += '<span class="tag">炸板</span>';
+      }
+      if (r.breakout) {
+        if (r.breakout.vol_breakout) tags += '<span class="tag">放量</span>';
+        if (r.breakout.price_breakout_20d) tags += '<span class="tag green">突破20日高</span>';
+      }
+      html += `<tr><td class="score">${r.score}</td><td>${r.symbol}</td><td>${q.name || ''}</td><td>${q.price}</td><td class="${cls}">${chg}%</td><td>${ind.RSI14}</td><td>${ind.rel_volume}</td><td>${ind.MA5} / ${ind.MA10} / ${ind.MA20}</td><td>${tags}</td></tr>`;
+    }
+    t.innerHTML = html;
+  } else if (report.cn_limit_up_pool) {
+    $('resultHead').textContent = 'A股涨停池（今日）';
+    let html = '<tr><th>代码</th><th>名称</th><th>价格</th><th>涨跌幅</th><th>板型</th><th>连板天数</th><th>封板率</th><th>换手率</th><th>原因</th></tr>';
+    for (const it of report.cn_limit_up_pool) {
+      html += `<tr><td>${it.symbol}</td><td>${it.name || ''}</td><td>${it.price}</td><td class="up">${it.change_pct}%</td><td>${it.board_type || ''}</td><td>${it.high_days || ''}</td><td>${it.seal_rate || ''}</td><td>${it.turnover_rate || ''}%</td><td>${it.reason || ''}</td></tr>`;
+    }
+    t.innerHTML = html;
+  }
+  const m = report.meta || {};
+  $('resultMeta').innerHTML =
+    '数据源：' + (m.sources || []).join('；') + '<br>' +
+    '行情时间：' + (m.quote_times || []).join('；') + '<br>' +
+    '成功 ' + (m.success || 0) + ' / 失败 ' + (m.failed || 0) +
+    ((m.errors && m.errors.length) ? '<br>错误：' + m.errors.slice(0, 5).join('；') : '') +
+    '<br>注：' + (m.notes || []).join('；');
+}
+</script>
+</body>
+</html>
