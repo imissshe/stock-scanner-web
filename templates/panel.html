@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>控制面板 · 股票异动扫描器</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f5f6f8; color: #222; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: #666; font-size: 13px; margin-bottom: 20px; }
+  .sub a { color: #2563eb; text-decoration: none; }
+  .card { background: #fff; border-radius: 10px; padding: 18px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card h2 { font-size: 16px; margin: 0 0 12px; }
+  button { background: #2563eb; color: #fff; border: 0; border-radius: 8px; padding: 9px 16px; font-size: 14px; cursor: pointer; }
+  button.secondary { background: #e5e7eb; color: #222; }
+  button:disabled { opacity: .5; cursor: default; }
+  input[type=password], input[type=text] { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 15px; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+  .stat { background: #f8fafc; border-radius: 8px; padding: 10px 12px; }
+  .stat .k { color: #666; font-size: 12px; }
+  .stat .v { font-size: 15px; font-weight: 600; margin-top: 2px; word-break: break-all; }
+  pre { background: #0f172a; color: #d1e7ff; border-radius: 8px; padding: 12px; font-size: 12.5px; line-height: 1.5; overflow: auto; max-height: 420px; white-space: pre-wrap; word-break: break-all; margin: 0; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .err { color: #b91c1c; font-size: 13px; min-height: 18px; }
+  .hint { color: #666; font-size: 12.5px; margin-top: 8px; }
+  #termCmd { font-family: ui-monospace, Menlo, Consolas, monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>控制面板</h1>
+  <div class="sub"><a href="/">← 返回扫描器</a> · 这台 VPS（InstaBox server-1）上的扫描器进程由这里管理</div>
+
+  {% if not ready %}
+  <div class="card" id="setupCard">
+    <h2>首次使用：设置面板密码</h2>
+    <input type="password" id="setupPw" placeholder="设置一个密码（至少 8 位）" autocomplete="new-password">
+    <input type="password" id="setupPw2" placeholder="再输一遍" autocomplete="new-password">
+    <div class="row"><button onclick="doSetup()">设置密码并进入</button></div>
+    <div class="err" id="setupErr"></div>
+    <div class="hint">这个密码只用于登录本面板，请用你记得住的。设置后本页面即关闭。</div>
+  </div>
+  {% elif not authed %}
+  <div class="card" id="loginCard">
+    <h2>登录面板</h2>
+    <input type="password" id="loginPw" placeholder="面板密码" autocomplete="current-password">
+    <div class="row"><button onclick="doLogin()">登录</button></div>
+    <div class="err" id="loginErr"></div>
+  </div>
+  {% else %}
+  <div class="card">
+    <h2>运行状态</h2>
+    <div class="grid" id="stats"><div class="stat"><div class="k">状态</div><div class="v">加载中…</div></div></div>
+    <div class="row" style="margin-top:12px">
+      <button class="secondary" onclick="loadStatus()">刷新状态</button>
+      <button class="secondary" onclick="loadLogs()">查看日志</button>
+      <button onclick="doRestart()">重启扫描器</button>
+      <button class="secondary" onclick="doLogout()">退出登录</button>
+    </div>
+    <div class="err" id="opErr"></div>
+  </div>
+
+  <div class="card" id="logCard" style="display:none">
+    <h2>日志（最后 200 行）</h2>
+    <pre id="logOut"></pre>
+  </div>
+
+  <div class="card">
+    <h2>网页终端</h2>
+    <input type="text" id="termCmd" placeholder="输入命令，如 ls、df -h、ps aux | grep app.py" autocomplete="off" spellcheck="false">
+    <div class="row"><button onclick="runCmd()">执行</button><span class="hint" style="margin:0">单条命令最长跑 30 秒，工作目录是主目录 ~</span></div>
+    <pre id="termOut" style="margin-top:12px; display:none"></pre>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+async function postJson(url, body) {
+  const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+  return data;
+}
+async function doSetup() {
+  const pw = document.getElementById("setupPw").value, pw2 = document.getElementById("setupPw2").value;
+  const err = document.getElementById("setupErr");
+  if (pw.length < 8) { err.textContent = "密码至少 8 位"; return; }
+  if (pw !== pw2) { err.textContent = "两次输入不一致"; return; }
+  try { await postJson("/panel/setup", {password: pw}); location.reload(); }
+  catch (e) { err.textContent = e.message; }
+}
+async function doLogin() {
+  const pw = document.getElementById("loginPw").value;
+  const err = document.getElementById("loginErr");
+  try { await postJson("/panel/login", {password: pw}); location.reload(); }
+  catch (e) { err.textContent = e.message; }
+}
+async function doLogout() { await postJson("/panel/logout"); location.reload(); }
+function fmtUptime(s) {
+  if (s < 60) return s + " 秒";
+  if (s < 3600) return Math.floor(s / 60) + " 分钟";
+  return Math.floor(s / 3600) + " 小时 " + Math.floor((s % 3600) / 60) + " 分";
+}
+async function loadStatus() {
+  const box = document.getElementById("stats");
+  try {
+    const r = await fetch("/panel/api/status");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const s = await r.json();
+    const items = [
+      ["服务器时间", s.time_utc], ["主机名", s.hostname], ["进程 PID", s.pid],
+      ["已运行", fmtUptime(s.process_uptime_sec)], ["负载（1分钟）", s.load_1m],
+      ["内存可用 / 总计", (s.mem_available_mb ?? "?") + " / " + (s.mem_total_mb ?? "?") + " MB"],
+      ["磁盘剩余 / 总计", s.disk_free_gb + " / " + s.disk_total_gb + " GB"],
+      ["Python", s.python], ["工作目录", s.cwd]
+    ];
+    box.innerHTML = items.map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  } catch (e) { box.innerHTML = `<div class="stat"><div class="k">状态</div><div class="v">读取失败：${e.message}</div></div>`; }
+}
+async function loadLogs() {
+  const card = document.getElementById("logCard"), out = document.getElementById("logOut");
+  card.style.display = "block"; out.textContent = "加载中…";
+  try {
+    const r = await fetch("/panel/api/logs?lines=200");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    out.textContent = Object.entries(data).map(([k, v]) => "===== " + k + " =====\n" + v).join("\n\n");
+  } catch (e) { out.textContent = "读取失败：" + e.message; }
+}
+async function doRestart() {
+  const err = document.getElementById("opErr");
+  if (!confirm("确定要重启扫描器吗？页面会断开几秒。")) return;
+  try { const d = await postJson("/panel/api/restart"); err.style.color = "#15803d"; err.textContent = d.msg; setTimeout(loadStatus, 4000); }
+  catch (e) { err.style.color = "#b91c1c"; err.textContent = e.message; }
+}
+async function runCmd() {
+  const input = document.getElementById("termCmd"), out = document.getElementById("termOut");
+  const cmd = input.value.trim();
+  if (!cmd) return;
+  out.style.display = "block"; out.textContent = "$ " + cmd + "\n执行中…";
+  try {
+    const d = await postJson("/panel/api/run", {cmd});
+    out.textContent = "$ " + cmd + "\n" + (d.output || "(无输出)") + "\n[退出码 " + d.exit_code + " · " + d.elapsed_sec + " 秒]";
+  } catch (e) { out.textContent = "$ " + cmd + "\n失败：" + e.message; }
+}
+document.getElementById("termCmd")?.addEventListener("keydown", e => { if (e.key === "Enter") runCmd(); });
+document.getElementById("loginPw")?.addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+document.getElementById("setupPw2")?.addEventListener("keydown", e => { if (e.key === "Enter") doSetup(); });
+{% if authed %}loadStatus();{% endif %}
+</script>
+</body>
+</html>
